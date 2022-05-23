@@ -36,7 +36,7 @@ def main():
     # MODIFY PREIMAGE HASH HERE #
     #############################
 
-    preimage_hash = '0xa060b5e6bd193184f53563bcad1fd430c4dc68f9b0039aced9fd4c1304f95f03'
+    preimage_hash = '0x4bb101c53c20857f233ab6429bb808ab411b1def18b2cbf2603b1ca1232bdc59'
 
     #############################
     #############################
@@ -68,7 +68,8 @@ def main():
     for value in proposed_variables['performance']['multipliers']:
         geobin = value[0]
         multiplier = value[1] / multiplier_decimals
-        print(f"Multiplier for `{bins[geobin]}` changing from {current_multipliers[geobin]} to {multiplier}")
+        if multiplier != current_multipliers[geobin]:
+            print(f"Multiplier for `{bins[geobin]}` changing from {current_multipliers[geobin]} to {multiplier}")
 
     #############################
     #############################
