@@ -39,9 +39,11 @@ def main():
     ranked = xxchain.rank_validators()
 
     # Nominate
-    for account in accounts:
-        xxchain.nominate(account, ranked[:num_targets], False)
-        ranked = ranked[num_targets:]
+    for idx, account in enumerate(accounts):
+        targets = []
+        for j in range(num_targets):
+            targets.append(ranked[idx+j*len(accounts)])
+        xxchain.nominate(account, targets, False)
 
 
 if __name__ == "__main__":
