@@ -6,6 +6,12 @@ import logging as log
 DECIMALS = 1e9
 
 
+# Split an array in equal parts
+def chunks(array, parts):
+    for i in range(0, len(array), parts):
+        yield array[i:i + parts]
+
+
 def get_timestamp(block):
     for ext in block['extrinsics']:
         data = ext.value

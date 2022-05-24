@@ -1,5 +1,6 @@
 import logging as log
-from substrateinterface import SubstrateInterface  # pip3 install substrate-interface
+from substrateinterface import SubstrateInterface, Keypair  # pip3 install substrate-interface
+from substrateinterface.exceptions import SubstrateRequestException
 import src.helpers as helpers
 from datetime import datetime
 import sys
@@ -15,11 +16,13 @@ class XXNetworkInterface(SubstrateInterface):
         try:
             super(XXNetworkInterface, self).__init__(url=url)
         except ConnectionRefusedError:
-            log.error("No local xx network node running.")
+            log.error("Can't connect to specified xx network node endpoint")
             raise
         except Exception as e:
             log.error("Failed to get xx network connection: %s" % e)
             raise
+        # Keychain
+        self.keychain = {}
         # Known accounts
         self.treasury_account = "6XmmXY7zLRirfFQivNnn6LNyRP1aMvtzyr4gATsfbdFh2QqF"
         self.canary_account = "6XmmXY7zLRirfHC8R99We24pEv2vpnGi29qZBRkdHNKxMCEB"
@@ -246,6 +249,67 @@ class XXNetworkInterface(SubstrateInterface):
             block = self.block_header_query(block_estimate)
             block_hash = block['header']['hash']
         return query_fn(*args, block_hash=block_hash)
+
+    ##############################
+    # Generic call functions
+    ##############################
+
+    # Build a batch of calls
+    def build_batch_calls(self, calls):
+        convert_calls = []
+        for call in calls:
+            convert_calls.append(call.value)
+        return self.compose_call(
+            call_module='Utility',
+            call_function='batch',
+            call_params={'calls': convert_calls}
+        )
+
+    # Build a call
+    def build_call(self, module, function, params):
+        return self.compose_call(
+            call_module=module,
+            call_function=function,
+            call_params=params
+        )
+
+    ##############################
+    # Transaction send functions
+    ##############################
+
+    # Submit a transaction
+    def send_transaction(self, account, call, wait_inclusion: bool = True, wait_finality: bool = False):
+        keypair = self.keychain.get(account)
+        if keypair is None:
+            log.error(f"Can't send transaction from {account}, don't have keypair in keychain")
+            return
+        extrinsic = self.create_signed_extrinsic(call=call, keypair=keypair)
+        try:
+            receipt = self.submit_extrinsic(extrinsic,
+                                            wait_for_inclusion=wait_inclusion,
+                                            wait_for_finalization=wait_finality)
+            log.info(f"Transaction sent, with hash {receipt.extrinsic_hash}")
+        except SubstrateRequestException as e:
+            log.error(f"Failed to send transaction: {e}")
+
+    # Submit multiple calls in batches of given size
+    def send_batches(self, account, calls, batch_size: int = 10,
+                     wait_inclusion: bool = True, wait_finality: bool = False):
+        call_batches = helpers.chunks(calls, batch_size)
+        for call in call_batches:
+            batch = self.build_batch_calls(call)
+            log.info(f"Sending batch with {len(call)} calls")
+            self.send_transaction(account, batch, wait_inclusion, wait_finality)
+
+    # Add an account to the keychain
+    def add_account(self, mnemonic, path: str = ''):
+        try:
+            keypair = Keypair.create_from_uri(mnemonic+path, ss58_format=self.ss58_format)
+            addr = keypair.ss58_address
+            self.keychain[addr] = keypair
+            log.info(f"Added account {addr} to keychain")
+        except Exception as e:
+            log.error(f"Error adding account to keychain: {e}")
 
     ##############################
     # Economics queries
@@ -500,3 +564,82 @@ class XXNetworkInterface(SubstrateInterface):
                                 "reward": helpers.remove_decimals(nominator_reward)
                             })
         return result
+
+    ##############################
+    # Staking queries
+    ##############################
+
+    # Check current nomination targets of given accounts are validators
+    def check_nominations(self, accounts):
+        nominators = self.map_query("Staking", "Nominators", "")
+        validators = self.map_query("Staking", "Validators", "")
+        bad_targets = {}
+        for acct in accounts:
+            bad_targets[acct] = []
+            if acct not in nominators:
+                log.warning(f"Account {acct} is not nominating")
+                continue
+            targets = nominators[acct]["targets"]
+            if len(targets) == 0:
+                log.warning(f"Account {acct} has no targets")
+                continue
+            for target in targets:
+                if target not in validators:
+                    log.warning(f"Nominated target {target} of account {acct} is not a validator")
+                    bad_targets[acct].append(target)
+            if len(bad_targets[acct]) == 0:
+                log.info(f"Account {acct} has valid nomination targets")
+        return bad_targets
+
+    # Rank validators based on performance over the last given number of eras (defaults to 7)
+    def rank_validators(self, eras: int = 7):
+        validators = self.map_query("Staking", "Validators", "")
+        curr_era = self.item_query("Staking", "ActiveEra")
+        curr_era = curr_era['index']
+        end_era = curr_era - 1
+        start_era = end_era - eras + 1
+
+        # Gather necessary information for era range
+        # History depth
+        depth = self.item_query("Staking", "HistoryDepth")
+        points = {}
+        target_era = start_era
+        while True:
+            eras_points = self.query_era(target_era, self.map_query, "Staking", "ErasRewardPoints", "")
+            points = {**points, **eras_points}
+            target_era += depth - 1
+            if target_era >= end_era:
+                break
+
+        totals = {}
+        for era in range(start_era, end_era+1):
+            log.info(f"Processing era {era}")
+            era_points = points[era]
+
+            for validator in validators:
+                # Find points
+                validator_points = 0
+                for value in era_points["individual"]:
+                    if value[0] == validator:
+                        validator_points = value[1]
+                        break
+                # Accumulate points
+                if validator not in totals:
+                    totals[validator] = validator_points
+                else:
+                    totals[validator] += validator_points
+
+        return sorted(totals, key=totals.get, reverse=True)
+
+    ##############################
+    # Actions
+    ##############################
+
+    # Nominate given accounts
+    # NOTE: function doesn't check if all accounts are validators
+    def nominate(self, account, targets, wait_inclusion: bool = True, wait_finality: bool = False):
+        log.info(f"Nominating following {len(targets)} accounts: {targets} from {account}")
+        # Build call
+        nom_call = self.build_call("Staking", "nominate", {'targets': targets})
+        # Send transaction
+        self.send_transaction(account, nom_call, wait_inclusion, wait_finality)
