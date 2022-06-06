@@ -12,7 +12,7 @@ import sys
 
 class XXNetworkInterface(SubstrateInterface):
     # Constructor
-    def __init__(self, url: str = "ws://localhost:9944", logfile: str = "", verbose: bool = False):
+    def __init__(self, url: str = "ws://localhost:63007", logfile: str = "", verbose: bool = False):
         try:
             super(XXNetworkInterface, self).__init__(url=url)
         except ConnectionRefusedError:
