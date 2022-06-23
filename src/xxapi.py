@@ -245,7 +245,7 @@ class XXNetworkInterface(SubstrateInterface):
         block_hash = None
         if era < (curr_era - depth):
             # Estimate block that contains info about given era
-            block_estimate = int((era+depth-0.5)*self.blocks_per_era)
+            block_estimate = int((era+depth-1.5)*self.blocks_per_era)
             block = self.block_header_query(block_estimate)
             block_hash = block['header']['hash']
         return query_fn(*args, block_hash=block_hash)

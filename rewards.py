@@ -11,18 +11,18 @@ def main():
 
     # Replace with desired accounts
     accounts = [
-        "6YqWUNQVwA3k6NwM173w4crsN3e4SV719z9xkWRP71a6ZBBz",
-        "6Ydyrg6uKLzdp9oPG7AQMiuCg1SxgXWRqpaMs3FqHQShJsUv",
-        "6Y7tiHiypNecHar732Qy7uXbbNAgmntqvGaZdF8cRPi4Fhhp",
-        "6XnYh3yvhoKW4fTvFsadg52yD9zWUYuaVjz5QWesw5Tfy4Bf",
-        "6ap5Fvkqfdrwye1TKeVTchDF22zZywW1Hpgms9gntoFH1EFn",
-        "6WcEGud85mqEuTfKKEJFBuyfKnBRqcPuHoDLpb6XAx9d6Y9H",
-        "6a2qQCow8cAMp3h1eTGmdkVZt9yiHC6VjgqatxuaFMwjfPQn",
-        "6ZidkVepTfbAzbQMCd4bJ6egqoNYWdUJEYobXTwbe5v1Huhj"
+        '6VPoNGcw4QnU6oCGbT4Fqe6PwGRu6JVTXSWQ6dmj5SpPx77Q',
+        '6WwFERALLriPE91PpBvcFyCnHAT9TfBQHw5UfxKR9j5V5NKK',
+        '6ZnU6zo1kUbuDBacxqx1sYA7UzVXXr3H94FXKoatTipaLvCq',
+        '6ZCi18xFZABq4wne2zrX8GWomeitVXVYhp8S541qUyrJjY3M',
+        '6VQ1WSzb3xawHi6uDXqYyMvQh3D7TgGM1quBoWNGdv9KDzWZ',
+        '6XAVVPx5jWoJ3NjGWseXJbaod5ZtkTDQsQz9gVHCy1ejvgMC',
+        '6XLZbikndRHTE23DiTcAJAWmjwx51gPnqfyJEzWFUZB7hr6J',
+        '6WfWL98XBvc6tLPKaZPKbonnrAfrgLGVZJ8Zna8onMRe6yKW',
     ]
 
     # Can specify start (defaults to 0) and end era (defaults to last finished)
-    raw_data = xxchain.staking_rewards(accounts, 143)
+    raw_data = xxchain.staking_rewards(accounts)
 
     headers, csv_data = helpers.derive_csv_rewards(raw_data)
     helpers.save_csv_file('rewards.csv', headers, csv_data)
