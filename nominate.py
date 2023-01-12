@@ -35,14 +35,14 @@ def main():
     # (Maximum is 16 which is the best value to allow Phragmen to optimize distribution of stake)
     num_targets = 16
 
-    # Get list of validators ranked by points in ast 7 eras
-    ranked = xxchain.rank_validators()
+    # Get list of validators ranked by performance in last 7 eras
+    ranked = xxchain.rank_validators_performance()
 
     # Nominate
     for idx, account in enumerate(accounts):
         targets = []
         for j in range(num_targets):
-            targets.append(ranked[idx+j*len(accounts)])
+            targets.append(ranked[idx+j*len(accounts)][0])
         xxchain.nominate(account, targets, False)
 
 

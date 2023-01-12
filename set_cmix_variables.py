@@ -6,7 +6,7 @@ multiplier_decimals = 10**3
 def main():
     # Connect to chain
     # Change the endpoint if necessary
-    xxchain = xxapi.XXNetworkInterface('ws://127.0.0.1:63007')
+    xxchain = xxapi.XXNetworkInterface()
 
     if xxchain is None:
         exit(1)

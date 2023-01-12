@@ -1,7 +1,10 @@
+import json
 import logging as log
+import math
 from substrateinterface import SubstrateInterface, Keypair  # pip3 install substrate-interface
 from substrateinterface.exceptions import SubstrateRequestException
 import src.helpers as helpers
+import src.phragmen as phragmen
 from datetime import datetime
 import sys
 
@@ -13,14 +16,6 @@ import sys
 class XXNetworkInterface(SubstrateInterface):
     # Constructor
     def __init__(self, url: str = "ws://localhost:63007", logfile: str = "", verbose: bool = False):
-        try:
-            super(XXNetworkInterface, self).__init__(url=url)
-        except ConnectionRefusedError:
-            log.error("Can't connect to specified xx network node endpoint")
-            raise
-        except Exception as e:
-            log.error("Failed to get xx network connection: %s" % e)
-            raise
         # Keychain
         self.keychain = {}
         # Known accounts
@@ -40,6 +35,7 @@ class XXNetworkInterface(SubstrateInterface):
         self.cache = {}
         # Setup logging
         handlers = [log.StreamHandler(sys.stdout)]
+        self.verbose = verbose
         if logfile != "":
             handlers.append(log.FileHandler(logfile, mode='w'))
         log.basicConfig(
@@ -48,6 +44,15 @@ class XXNetworkInterface(SubstrateInterface):
             level=log.INFO if not verbose else log.DEBUG,
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+        # Initialize substrate interface
+        try:
+            super(XXNetworkInterface, self).__init__(url=url)
+        except ConnectionRefusedError:
+            log.error("Can't connect to specified xx network node endpoint")
+            raise
+        except Exception as e:
+            log.error("Failed to get xx network connection: %s" % e)
+            raise
 
     ##############################
     # Generic query functions
@@ -377,18 +382,28 @@ class XXNetworkInterface(SubstrateInterface):
     def stakeable_history(self, start_block: int = None, block_step: int = None):
         return self.query_history(start_block, block_step, self.stakeable, None)
 
-    # Compute estimate of validator rewards for current era
-    # If a validator address is provided, it computes its portion based on current era points
-    # Otherwise the average payout is given
-    def estimate_payout(self, validator_address: str = ""):
+    # Get economic info at a given block
+    def economic_info(self, block_number):
         # Get inflation params
         inflation = self.item_query("XXEconomics", "InflationParams")
         min_inflation = inflation['min_inflation'] / helpers.DECIMALS
         ideal_stake = inflation['ideal_stake'] / helpers.DECIMALS
-
         # Get interest points
         interest_points = self.item_query("XXEconomics", "InterestPoints")
+        # Compute fixed economics
+        interest = helpers.get_interest(interest_points, block_number)
+        ideal_inflation = ideal_stake * interest
+        return {
+            "min_inflation": min_inflation,
+            "ideal_stake": ideal_stake,
+            "interest": interest,
+            'ideal_inflation': ideal_inflation,
+        }
 
+    # Compute estimate of validator rewards for current era
+    # If a validator address is provided, it computes its portion based on current era points
+    # Otherwise the average payout is given
+    def estimate_payout(self, validator_address: str = ""):
         # Get current era stake
         era = self.item_query("Staking", "ActiveEra")
         start = era['start']
@@ -399,6 +414,10 @@ class XXNetworkInterface(SubstrateInterface):
         # Get validator set size
         val_set = self.double_map_query("Staking", "ErasStakers", era)
         val_size = len(val_set)
+        # Compute total TM stake
+        tm_stake = sum([exposures["custody"] for exposures in val_set.values()])
+        tm_stake = helpers.remove_decimals(tm_stake)
+        tm_impact = stake / (stake + tm_stake)
 
         # Estimate block number for middle of curr era
         block = self.get_block()
@@ -412,24 +431,29 @@ class XXNetworkInterface(SubstrateInterface):
         predicted_middle_curr = block_no - int((network_time-start)/self.block_time) + int(self.blocks_per_era/2)
         log.info(f"Middle curr era block: {predicted_middle_curr}")
 
-        # Compute fixed economics
-        interest = helpers.get_interest(interest_points, predicted_middle_curr)
-        ideal_inflation = ideal_stake * interest
+        # Fet fixed economics info
+        economics = self.economic_info(predicted_middle_curr)
+        min_inflation = economics["min_inflation"]
+        ideal_stake = economics["ideal_stake"]
+        interest = economics["interest"]
+        ideal_inflation = economics["ideal_inflation"]
         log.info(f"Min inflation: {min_inflation}")
         log.info(f"Ideal staking ratio: {ideal_stake}")
         log.info(f"Interest ratio: {interest}")
         log.info(f"Ideal inflation: {ideal_inflation}")
 
-        # Compute economics
+        # Compute staking ratio and inflation
         stakeable = self.stakeable()
         stake_ratio = stake / stakeable
+        inflation = min_inflation + (ideal_inflation - min_inflation)*stake_ratio/ideal_stake
 
         log.info(f"Era: {era}")
         log.info(f"Stakeable: {stakeable}")
         log.info(f"Staked: {stake}")
+        log.info(f"Team multipliers: {tm_stake}")
         log.info(f"Stake ratio: {stake_ratio}")
-        inflation = min_inflation + (ideal_inflation - min_inflation)*stake_ratio/ideal_stake
         log.info(f"Inflation: {inflation}")
+        log.info(f"Average return: {tm_impact*inflation/stake_ratio}")
 
         # Compute era payout
         total_payout = ideal_inflation*stakeable*self.era_milis/self.year_milis
@@ -457,9 +481,13 @@ class XXNetworkInterface(SubstrateInterface):
 
         val_payout = payout / val_size
         log.info(f"Validator set size: {val_size}")
-        log.info("Estimated validator payment, assuming equal performance")
+        log.info(f"Estimated validator payment, assuming equal performance")
         log.info(val_payout)
         return val_payout
+
+    ##############################
+    # Staking queries
+    ##############################
 
     # Get staking rewards per validator earned by given account(s) in given era range
     # Defaults to start_era = 0, end_era = None, which gets all rewards up to last era
@@ -522,6 +550,9 @@ class XXNetworkInterface(SubstrateInterface):
                 # Validator info
                 validator_stake = info["own"]
                 total_stake = info["total"]
+                # Count TM in total stake if exposure contains it
+                if "custody" in info:
+                    total_stake += info["custody"]
                 validator_commission = helpers.remove_decimals(prefs[validator]["commission"])
 
                 # Find points
@@ -565,10 +596,6 @@ class XXNetworkInterface(SubstrateInterface):
                             })
         return result
 
-    ##############################
-    # Staking queries
-    ##############################
-
     # Check current nomination targets of given accounts are validators
     def check_nominations(self, accounts):
         nominators = self.map_query("Staking", "Nominators", "")
@@ -591,8 +618,9 @@ class XXNetworkInterface(SubstrateInterface):
                 log.info(f"Account {acct} has valid nomination targets")
         return bad_targets
 
-    # Rank validators based on performance over the last given number of eras (defaults to 7)
-    def rank_validators(self, eras: int = 7):
+    # Rank validators based on average performance over the last given number of eras (defaults to 7)
+    # Returns a list of [address, points] sorted by most points
+    def rank_validators_performance(self, eras: int = 7):
         validators = self.map_query("Staking", "Validators", "")
         curr_era = self.item_query("Staking", "ActiveEra")
         curr_era = curr_era['index']
@@ -629,7 +657,163 @@ class XXNetworkInterface(SubstrateInterface):
                 else:
                     totals[validator] += validator_points
 
-        return sorted(totals, key=totals.get, reverse=True)
+        return sorted(list(totals.items()), key=lambda item: item[1], reverse=True)
+
+    # Rank validators based on average nominator return over the last given number of eras (defaults to 7)
+    # Returns a list of [address, ROI] sorted by highest ROI
+    def rank_validators_return(self, eras: int = 7):
+        validators = self.map_query("Staking", "Validators", "")
+        curr_era = self.item_query("Staking", "ActiveEra")
+        curr_era = curr_era['index']
+        end_era = curr_era - 1
+        start_era = end_era - eras + 1
+
+        # Gather necessary information for era range
+        # History depth
+        depth = self.item_query("Staking", "HistoryDepth")
+        points = {}
+        rewards = {}
+        target_era = start_era
+        while True:
+            eras_points = self.query_era(target_era, self.map_query, "Staking", "ErasRewardPoints", "")
+            points = {**points, **eras_points}
+            eras_rewards = self.query_era(target_era, self.map_query, "Staking", "ErasValidatorReward", "")
+            rewards = {**rewards, **eras_rewards}
+            target_era += depth - 1
+            if target_era >= end_era:
+                break
+
+        totals = {}
+        for era in range(start_era, end_era+1):
+            log.info(f"Processing era {era}")
+            era_total_reward = rewards[era]
+            era_points = points[era]
+            points_total = era_points["total"]
+
+            # Get stakers for specified era
+            stakers = self.query_era(era, self.double_map_query, "Staking", "ErasStakers", era)
+            # Get validator preferences for specified era
+            prefs = self.query_era(era, self.double_map_query, "Staking", "ErasValidatorPrefs", era)
+
+            for validator, info in stakers.items():
+                # Validator info
+                total_stake = info["total"]
+                # Count TM in total stake if exposure contains it
+                if "custody" in info:
+                    total_stake += info["custody"]
+                validator_commission = helpers.remove_decimals(prefs[validator]["commission"])
+
+                # Find points
+                validator_points = 0
+                for value in era_points["individual"]:
+                    if value[0] == validator:
+                        validator_points = value[1]
+                        break
+
+                # Validator reward according to performance points
+                validator_reward = validator_points * era_total_reward / points_total
+                # Validator commission reward
+                commission_reward = validator_commission * validator_reward
+                # Deduct commission reward from validator reward
+                validator_leftover_reward = validator_reward - commission_reward
+                # Compute nominator return in APY
+                nominator_return = (validator_leftover_reward * 365) / total_stake
+                # Accumulate return
+                if validator not in totals:
+                    totals[validator] = nominator_return / eras
+                else:
+                    totals[validator] += nominator_return / eras
+
+        # Populate any missing validators (the ones that have never been elected in the given eras)
+        for validator in validators.keys():
+            if validator not in totals:
+                totals[validator] = 0.0
+
+        return sorted(list(totals.items()), key=lambda item: item[1], reverse=True)
+
+    ##############################
+    # Phragmen Elections
+    ##############################
+
+    # Cache staking state necessary for Phragmen
+    def cache_staking_state(self):
+        self.map_query("Staking", "Bonded", "", force_cache_refresh=True)
+        self.map_query("Staking", "Ledger", "", force_cache_refresh=True)
+        self.map_query("Staking", "Nominators", "", force_cache_refresh=True)
+        self.map_query("Staking", "Validators", "", force_cache_refresh=True)
+        self.map_query("Staking", "SlashingSpans", "", force_cache_refresh=True)
+
+    # Build the list of voters, excluding the given nominator if provided
+    # This consists of all nominators + validators' self vote
+    # Format: (address, active_stake, targets)
+    # NOTE: make sure to cache the following maps before calling:
+    # Staking.Validators
+    # Staking.Nominators
+    # Staking.Bonded
+    # Staking.Ledger
+    # Staking.SlashingSpans
+    def build_voters(self, exclude: str = ""):
+        # Get maps from cache
+        validators = None
+        nominators = None
+        bonded = None
+        ledger = None
+        slash_spans = None
+        if "Staking" in self.cache:
+            if "Validators" in self.cache["Staking"]:
+                validators = self.cache["Staking"]["Validators"]
+            if "Nominators" in self.cache["Staking"]:
+                nominators = self.cache["Staking"]["Nominators"]
+            if "Bonded" in self.cache["Staking"]:
+                bonded = self.cache["Staking"]["Bonded"]
+            if "Ledger" in self.cache["Staking"]:
+                ledger = self.cache["Staking"]["Ledger"]
+            if "SlashingSpans" in self.cache["Staking"]:
+                slash_spans = self.cache["Staking"]["SlashingSpans"]
+        if validators is None or nominators is None or bonded is None or ledger is None or slash_spans is None:
+            log.error("Can't build voters without having Staking maps cached")
+            raise Exception
+        voters = []
+        for validator in validators.keys():
+            stake = helpers.get_active_stake(validator, bonded, ledger)
+            if stake is not None:
+                voters.append([validator, stake, [validator]])
+        for nominator, noms in nominators.items():
+            if nominator == exclude:
+                continue
+            stake = helpers.get_active_stake(nominator, bonded, ledger)
+            # Remove non validators, duplicates and slashed validators needing renomination from targets
+            if stake is not None:
+                targets = []
+                for target in noms["targets"]:
+                    if target not in validators:
+                        continue
+                    if target in targets:
+                        continue
+                    slashed_era = 0 if target not in slash_spans else slash_spans[target]["last_nonzero_slash"]
+                    if noms["submitted_in"] < slashed_era:
+                        continue
+                    targets.append(target)
+                voters.append([nominator, stake, targets])
+        return voters
+
+    # Run sequential phragmen election on the current state of the network
+    # NOTE: this function doesn't perform the reduction algorithm after the election
+    # This means that the winning validators and their total stake are correct
+    # but there is no optimized distribution of nominator stake that reduces the overall number
+    # of exposed validators per nominator
+    def seq_phragmen(self):
+        # Cache Staking state
+        self.cache_staking_state()
+        to_elect = self.item_query("Staking", "ValidatorCount")
+        log.info(f"{len(self.cache['Staking']['Validators'])} validators, {len(self.cache['Staking']['Nominators'])} nominators, electing {to_elect}")
+
+        voters = self.build_voters()
+
+        # Run sequential phragmen algorithmn
+        distribution, validators = phragmen.seq_phragmen(voters, to_elect)
+        phragmen.printresult(distribution, validators)
+        log.info(f"score = {phragmen.compute_score(validators)}")
 
     ##############################
     # Actions

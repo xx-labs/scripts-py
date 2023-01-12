@@ -145,3 +145,11 @@ def derive_csv_apy(raw_data):
         era_totals[idx] = 0 if era_total_stake[idx] == 0 else 100 * (era_total_reward[idx] * 365 / era_total_stake[idx])
     csv_data.append(era_totals)
     return headers, csv_data
+
+
+def get_active_stake(addr, bonded, ledger):
+    if addr in bonded:
+        ctrl = bonded[addr]
+        if ctrl in ledger:
+            return ledger[ctrl]["active"]
+    return None
